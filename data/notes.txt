@@ -1,0 +1,6 @@
+Machine learning is a field of AI that focuses on training models on data.
+Neural networks consist of layers of interconnected neurons.
+Supervised learning requires labeled datasets.
+FastAPI is a modern Python framework for building APIs.
+LangChain helps orchestrate prompts, tools, and LLM pipelines.
+Google Vertex AI allows running Gemini models with high performance.

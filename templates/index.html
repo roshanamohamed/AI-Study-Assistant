@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <h1>AI Study Assistant</h1>
+      <p>Ask questions on your notes. Upload PDFs or text to teach your assistant.</p>
+    </header>
+
+    <main class="app-main">
+      <section class="chat-section">
+        <div id="chat-window" class="chat-window">
+          <!-- Messages will be appended here -->
+        </div>
+
+        <form id="chat-form" class="chat-form">
+          <input
+            type="text"
+            id="chat-input"
+            class="chat-input"
+            placeholder="Ask a question about your notes..."
+            autocomplete="off"
+            required
+          />
+          <button type="submit" class="chat-send-btn">Send</button>
+        </form>
+      </section>
+
+      <section class="sidebar">
+        <h2>Study Material</h2>
+        <p class="sidebar-text">
+          Upload lecture slides, notes, or paste text. The assistant will use this as context.
+        </p>
+
+        <form id="upload-form" class="upload-form">
+          <label class="upload-label">Upload PDF or text file</label>
+          <input type="file" id="file-input" name="file" accept=".pdf,.txt" />
+
+          <label class="upload-label">Or paste notes here</label>
+          <textarea
+            id="notes-textarea"
+            name="text"
+            rows="6"
+            placeholder="Paste definitions, formulas, summaries..."
+          ></textarea>
+
+          <button type="submit" class="upload-btn">Add to Assistant</button>
+
+          <p id="upload-status" class="upload-status"></p>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const chatWindow = document.getElementById("chat-window");
+
+    const uploadForm = document.getElementById("upload-form");
+    const fileInput = document.getElementById("file-input");
+    const notesTextarea = document.getElementById("notes-textarea");
+    const uploadStatus = document.getElementById("upload-status");
+
+    function appendMessage(sender, text) {
+      const message = document.createElement("div");
+      message.classList.add("message", sender === "you" ? "you" : "assistant");
+      message.innerHTML = `<span class="sender">${sender === "you" ? "You" : "Assistant"}</span><p>${text}</p>`;
+      chatWindow.appendChild(message);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    chatForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const question = chatInput.value.trim();
+      if (!question) return;
+
+      appendMessage("you", question);
+      chatInput.value = "";
+      appendMessage("assistant", "Thinking...");
+
+      try {
+        const res = await fetch("/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question }),
+        });
+
+        const data = await res.json();
+        // Remove the "Thinking..." message (last one)
+        const lastMessage = chatWindow.lastElementChild;
+        if (lastMessage && lastMessage.classList.contains("assistant")) {
+          chatWindow.removeChild(lastMessage);
+        }
+
+        appendMessage("assistant", data.answer || "Sorry, I couldn't generate an answer.");
+      } catch (err) {
+        appendMessage("assistant", "Error contacting the server.");
+      }
+    });
+
+    uploadForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      uploadStatus.textContent = "Uploading...";
+      const formData = new FormData();
+
+      if (fileInput.files.length > 0) {
+        formData.append("file", fileInput.files[0]);
+      }
+
+      if (notesTextarea.value.trim()) {
+        formData.append("text", notesTextarea.value.trim());
+      }
+
+      try {
+        const res = await fetch("/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await res.json();
+        if (data.status === "ok") {
+          uploadStatus.textContent = "Notes added successfully!";
+          notesTextarea.value = "";
+          fileInput.value = "";
+        } else {
+          uploadStatus.textContent = data.message || "Upload failed.";
+        }
+      } catch (err) {
+        uploadStatus.textContent = "Error uploading notes.";
+      }
+    });
+  </script>
+</body>
+</html>

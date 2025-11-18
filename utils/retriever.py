@@ -1,43 +1,90 @@
 import os
+from typing import List, Optional
 
-DATA_PATH = "data/notes.txt"
+from langchain_google_vertexai import VertexAIEmbeddings
+from langchain_community.vectorstores import FAISS
+
+DATA_DIR = "data"
+NOTES_PATH = os.path.join(DATA_DIR, "notes.txt")
+
+PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "internship-knowledge-hub")
+LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+# Global vector store + embeddings
+_embeddings = VertexAIEmbeddings(
+    model_name="textembedding-gecko@003",
+    project=PROJECT,
+    location=LOCATION,
+)
+_vectorstore: Optional[FAISS] = None
 
 
-def get_relevant_context(query: str, max_chars: int = 800) -> str:
+def _load_corpus() -> List[str]:
+    """Load initial corpus from notes.txt and any extra .txt files in data/."""
+    texts: List[str] = []
+
+    # Base notes file
+    if os.path.exists(NOTES_PATH):
+        with open(NOTES_PATH, "r", encoding="utf-8") as f:
+            texts.append(f.read())
+
+    # Any extra .txt files in data (excluding notes.txt)
+    if os.path.exists(DATA_DIR):
+        for fname in os.listdir(DATA_DIR):
+            path = os.path.join(DATA_DIR, fname)
+            if (
+                os.path.isfile(path)
+                and fname.endswith(".txt")
+                and os.path.abspath(path) != os.path.abspath(NOTES_PATH)
+            ):
+                with open(path, "r", encoding="utf-8") as f:
+                    texts.append(f.read())
+
+    return [t for t in texts if t.strip()]
+
+
+def init_vectorstore() -> None:
     """
-    Very simple keyword-based retriever over a local notes file.
-    Looks for lines that contain words from the query and returns
-    the top matches concatenated together (truncated to max_chars).
+    Initialize FAISS vector store from existing corpus.
+    Call this once at startup.
     """
+    global _vectorstore
 
-    if not os.path.exists(DATA_PATH):
-        return "No study notes found."
+    texts = _load_corpus()
+    if not texts:
+        _vectorstore = None
+        return
 
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        text = f.read()
+    _vectorstore = FAISS.from_texts(texts=texts, embedding=_embeddings)
 
-    # Break into lines
-    lines = text.splitlines()
 
-    # Simple scoring: count matching words per line
-    query_words = [w.lower() for w in query.split() if w.strip()]
-    scored = []
+def add_text_document(text: str) -> None:
+    """
+    Add new text to the vector store (e.g., from uploaded notes or PDFs).
+    """
+    global _vectorstore
 
-    for line in lines:
-        line_lower = line.lower()
-        score = sum(1 for w in query_words if w in line_lower)
-        if score > 0:
-            scored.append((score, line))
+    cleaned = text.strip()
+    if not cleaned:
+        return
 
-    # Sort by score descending
-    scored.sort(key=lambda x: x[0], reverse=True)
+    if _vectorstore is None:
+        _vectorstore = FAISS.from_texts(texts=[cleaned], embedding=_embeddings)
+    else:
+        _vectorstore.add_texts([cleaned])
 
-    # Take top lines and join them
-    best_lines = [line for _, line in scored[:5]]
-    combined = "\n".join(best_lines)
 
-    if not combined:
-        return "No matching context found in notes."
+def get_relevant_context(query: str, k: int = 4, max_chars: int = 1200) -> str:
+    """
+    Retrieve the most relevant chunks from the vector store using semantic similarity.
+    """
+    if _vectorstore is None:
+        return "No study documents found yet. Try adding some notes or PDFs."
 
-    # Limit the overall size
+    docs = _vectorstore.similarity_search(query, k=k)
+    combined = "\n\n".join(doc.page_content for doc in docs)
+
+    if not combined.strip():
+        return "No matching context found. I will answer from general knowledge."
+
     return combined[:max_chars]

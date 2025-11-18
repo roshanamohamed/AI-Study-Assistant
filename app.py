@@ -1,50 +1,63 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from utils.retriever import get_relevant_context
-from langchain_google_vertexai import ChatVertexAI
+import io
 import os
+from typing import Optional
+
+from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from pypdf import PdfReader
+
+from langchain_google_vertexai import ChatVertexAI
+
+from utils.retriever import init_vectorstore, get_relevant_context, add_text_document
 
 # ---- Vertex AI / Gemini config ----
-# You can either:
-# 1) Set GOOGLE_APPLICATION_CREDENTIALS env var to your service account json
-# 2) Or rely on your local gcloud auth environment
-
-# Optional: if you want to hardcode project/location, you can:
 VERTEX_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "internship-knowledge-hub")
 VERTEX_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 
-# Initialize Gemini via LangChain
 model = ChatVertexAI(
     model="gemini-1.5-flash",
     project=VERTEX_PROJECT,
     location=VERTEX_LOCATION,
     temperature=0.2,
-    max_output_tokens=400,
+    max_output_tokens=500,
 )
 
 app = FastAPI(title="AI Study Assistant")
+
+# Static + templates setup
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
 
 class Query(BaseModel):
     question: str
 
 
-@app.get("/")
-def root():
-    return {"message": "AI Study Assistant is running."}
+@app.on_event("startup")
+def startup_event():
+    # Build initial vector store from data/notes.txt etc.
+    init_vectorstore()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "title": "AI Study Assistant"},
+    )
 
 
 @app.post("/ask")
-def ask_question(query: Query):
+async def ask_question(query: Query):
     """
-    Main endpoint: takes a question, fetches relevant context from notes,
-    and asks Gemini to answer based on that context.
+    Takes a question, retrieves relevant context from the vector store,
+    and uses Gemini to generate an answer.
     """
-
-    # 1. Get relevant notes
     context = get_relevant_context(query.question)
 
-    # 2. Build prompt for the model
     prompt = f"""
 You are a helpful AI Study Assistant. Use the context from the student's notes
 to answer the question clearly and concisely. If the context does not contain
@@ -59,15 +72,62 @@ QUESTION:
 ANSWER (student-friendly, step-by-step if needed):
 """
 
-    # 3. Call Gemini through LangChain
     response = model.invoke(prompt)
-
-    # response.content may be a string or list depending on version.
-    # We handle the simple case where it's just text:
     answer = getattr(response, "content", str(response))
 
     return {
-        "question": query.question,
-        "context_used": context,
         "answer": answer,
+        "context": context,
     }
+
+
+def _extract_text_from_pdf_bytes(data: bytes) -> str:
+    reader = PdfReader(io.BytesIO(data))
+    texts = []
+    for page in reader.pages:
+        t = page.extract_text() or ""
+        texts.append(t)
+    return "\n".join(texts)
+
+
+@app.post("/upload")
+async def upload_notes(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+):
+    """
+    Accepts either:
+      - a PDF file (lecture slides / notes)
+      - raw text from a textarea
+    and adds it into the vector store.
+    """
+    combined_text = ""
+
+    # If file uploaded
+    if file is not None:
+        raw = await file.read()
+        if file.content_type == "application/pdf":
+            pdf_text = _extract_text_from_pdf_bytes(raw)
+            combined_text += "\n" + pdf_text
+        else:
+            try:
+                combined_text += "\n" + raw.decode("utf-8", errors="ignore")
+            except Exception:
+                return JSONResponse(
+                    {"status": "error", "message": "Unsupported file encoding."},
+                    status_code=400,
+                )
+
+    # If raw text provided
+    if text:
+        combined_text += "\n" + text
+
+    if not combined_text.strip():
+        return JSONResponse(
+            {"status": "error", "message": "No content provided."},
+            status_code=400,
+        )
+
+    add_text_document(combined_text)
+
+    return {"status": "ok", "message": "Notes added to your study assistant!"}

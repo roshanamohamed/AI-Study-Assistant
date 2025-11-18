@@ -2,5 +2,10 @@ fastapi
 uvicorn
 langchain
 langchain-google-vertexai
+langchain-community
 python-dotenv
 pydantic
+faiss-cpu
+pypdf
+jinja2
+python-multipart
